@@ -1,11 +1,14 @@
 import streamlit as st
 import pandas as pd
+import collections
 import io
+import os
+import time
 
 # 1. Page Configuration
-st.set_page_config(page_title="91 Pattern Tracker Pro", layout="centered")
+st.set_page_config(page_title="91 AI Pattern Tracker", layout="centered")
 
-# 2. Custom CSS (Visual Reference Style)
+# 2. Custom CSS
 st.markdown("""
     <style>
     .block-container { padding-top: 1rem !important; }
@@ -21,20 +24,59 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 3. Pattern Logic (Exact 100% Deterministic Matches)
-NUMBER_LOGIC = {
-    "431321": "SMALL", "313214": "BIG", "132141": "SMALL",
-    "214167": "SMALL", "141671": "BIG", "416716": "SMALL",
-    "821557": "SMALL", "215570": "BIG", "155703": "SMALL"
-}
-
-# 4. Session State
+# 3. Session State Initialization
+if 'logic_db' not in st.session_state: st.session_state.logic_db = {}
 if 'num_sequence' not in st.session_state: st.session_state.num_sequence = []
 if 'history' not in st.session_state: st.session_state.history = []
 if 'stats' not in st.session_state: 
     st.session_state.stats = {"wins": 0, "loss": 0, "streak": 0, "last_res": None, "max_win": 0, "max_loss": 0}
 
-# --- 5. MAIN TRACKER UI ---
+# --- 4. DATA PROCESSING FUNCTIONS ---
+def extract_logic_from_csv(uploaded_file):
+    data = []
+    # Handling different formats in OVER all.CSV
+    raw_content = uploaded_file.getvalue().decode("utf-8").splitlines()
+    for line in raw_content:
+        clean_line = line.strip().strip('"')
+        parts = clean_line.split('\t')
+        if len(parts) == 3:
+            data.append(parts)
+        elif len(parts) == 1 and len(parts[0]) >= 3:
+            # Format like 8BR
+            s = parts[0]
+            data.append([s[0], s[1], s[2]])
+    
+    df = pd.DataFrame(data, columns=['number', 'size', 'color'])
+    num_seq = df['number'].astype(str).tolist()
+    size_seq = df['size'].astype(str).tolist()
+    
+    logic = collections.defaultdict(list)
+    for i in range(len(num_seq) - 6):
+        pat = "".join(num_seq[i:i+6])
+        next_val = "BIG" if size_seq[i+6].upper() == 'B' else "SMALL"
+        logic[pat].append(next_val)
+    
+    deterministic = {}
+    for pat, outcomes in logic.items():
+        unique = set(outcomes)
+        if len(unique) == 1:
+            deterministic[pat] = list(unique)[0]
+    return deterministic
+
+# --- 5. INITIAL TRAINING ---
+if not st.session_state.logic_db:
+    st.title("🤖 AI Initialization")
+    st.info("Please upload your Master Data (e.g., OVER all.CSV) to train the AI.")
+    master_file = st.file_uploader("Upload Master CSV", type="csv")
+    if master_file:
+        if st.button("🚀 TRAIN AI NOW"):
+            st.session_state.logic_db = extract_logic_from_csv(master_file)
+            st.success(f"Trained successfully! Found {len(st.session_state.logic_db)} accurate patterns.")
+            time.sleep(1)
+            st.rerun()
+    st.stop()
+
+# --- 6. MAIN TRACKER UI ---
 st.title("🎯 91 PATTERN TRACKER")
 
 total = st.session_state.stats['wins'] + st.session_state.stats['loss']
@@ -50,9 +92,8 @@ st.markdown(f"""
     </div>
 """, unsafe_allow_html=True)
 
-# Prediction Logic
 current_pattern = "".join(map(str, st.session_state.num_sequence[-6:]))
-prediction = NUMBER_LOGIC.get(current_pattern, None)
+prediction = st.session_state.logic_db.get(current_pattern, None)
 
 if prediction:
     color = "#dc3545" if prediction == "BIG" else "#28a745"
@@ -60,7 +101,7 @@ if prediction:
 else:
     st.markdown('<div class="wait-box">WAITING FOR PATTERN...</div>', unsafe_allow_html=True)
 
-# Input
+# Input Dialer
 if len(st.session_state.num_sequence) < 6:
     init_input = st.text_input("Enter first 6 digits to start", max_chars=6)
     if st.button("INITIALIZE"):
@@ -95,32 +136,29 @@ else:
         st.session_state.num_sequence.append(new_digit)
         st.rerun()
 
-# Download Tracker History
 if st.session_state.history:
-    hist_df = pd.DataFrame(st.session_state.history)
-    st.table(hist_df.head(10))
-    st.download_button("📥 DOWNLOAD TRACKER HISTORY", hist_df.to_csv(index=False), "tracker_history.csv", "text/csv")
+    st.table(pd.DataFrame(st.session_state.history).head(10))
 
-if st.button("RESET TRACKER"):
+if st.button("🔄 RESET ALL"):
     st.session_state.clear()
     st.rerun()
 
-# --- 6. BATCH EVALUATION SECTION ---
+# --- 7. BATCH EVALUATION SECTION ---
 st.markdown('<div class="eval-section">', unsafe_allow_html=True)
 st.subheader("📊 Batch Evaluation (Past 500 Results)")
-up_file = st.file_uploader("Upload CSV (Header: 'number')", type="csv")
+up_file = st.file_uploader("Upload Evaluation CSV (Header: 'number')", type="csv")
 
 if up_file and st.button("🚀 START EVALUATION"):
     df_ev = pd.read_csv(up_file).head(500)
     if 'number' in df_ev.columns:
         e_wins, e_loss, e_max_w, e_max_l, cur_w, cur_l, e_results, t_seq = 0, 0, 0, 0, 0, 0, [], []
         for i, row in df_ev.iterrows():
-            n = int(row['number'])
+            n = str(row['number'])
             if len(t_seq) >= 6:
-                key = "".join(map(str, t_seq[-6:]))
-                p = NUMBER_LOGIC.get(key, None)
+                key = "".join(t_seq[-6:])
+                p = st.session_state.logic_db.get(key, None)
                 if p:
-                    act = "BIG" if n >= 5 else "SMALL"
+                    act = "BIG" if int(n) >= 5 else "SMALL"
                     if act == p:
                         e_wins += 1; cur_w += 1; cur_l = 0; e_max_w = max(e_max_w, cur_w)
                         res = "WIN"
@@ -137,7 +175,10 @@ if up_file and st.button("🚀 START EVALUATION"):
         st.write(f"**MAX WIN:** {e_max_w} | **MAX LOSS:** {e_max_l}")
         
         # Download Report
-        report_csv = pd.DataFrame(e_results).to_csv(index=False)
-        st.download_button("📥 DOWNLOAD BATCH REPORT", report_csv, "batch_evaluation.csv", "text/csv")
+        if e_results:
+            report_csv = pd.DataFrame(e_results).to_csv(index=False)
+            st.download_button("📥 DOWNLOAD BATCH REPORT", report_csv, "batch_results.csv", "text/csv")
+        else:
+            st.warning("No matches found in the evaluation file. Try a larger master data file.")
     else: st.error("CSV must have 'number' column.")
 st.markdown('</div>', unsafe_allow_html=True)
